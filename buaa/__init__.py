@@ -4,7 +4,8 @@ import json
 import time
 import datetime
 import smtp
-import numpy as np
+
+from . import bykc_encrypt
 
 try:
     import _thread as thread
@@ -13,7 +14,7 @@ except:
 
 try:
     import cv2
-
+    import numpy as np
 
     def show_image(stream, title=None):
         img = cv2.imdecode(np.frombuffer(stream, np.uint8), cv2.IMREAD_ANYCOLOR)
@@ -23,16 +24,16 @@ except ModuleNotFoundError:
     from PIL import Image
     import io
 
-
     def show_image(stream, title=None):
         img = Image.open(io.BytesIO(stream))
         img.show()
 
 from . import urllib3
 
-
-class BUAAException(Exception): pass
-
+class BUAAException(Exception):
+    def __init__(self, *args, status=None):
+        super().__init__(*args)
+        self.status = status
 
 def _binary_search(v, lst, key=None):
     if not lst: return 0
@@ -46,17 +47,13 @@ def _binary_search(v, lst, key=None):
             r = m
     return l
 
-
 PRODUCT_NAME = 'BUAA Course Grab'
-
 
 def date(s):
     return datetime.datetime(*time.strptime(s, "%Y-%m-%d %H:%M:%S")[:6])
 
-
 def date2str(d):
     return d.strftime("%Y-%m-%d %H:%M:%S")
-
 
 def url_escape(url):
     ESCAPE = [
@@ -84,7 +81,6 @@ def url_escape(url):
         url = url.replace(k, v)
     return url
 
-
 def params(url):
     parsed = urllib3.parse_url(url).query
     if parsed is None:
@@ -97,7 +93,6 @@ def params(url):
             v = s[1]
         res[s[0]] = v
     return res
-
 
 class CASTGC:
     re_cas_captcha_id = re.compile(r"config.captcha\s*=\s*{\s*type:\s*'image',\s*id:\s*'(-?[0-9]+)'")
@@ -240,8 +235,7 @@ class CASTGC:
         self.refresh_webvpn()
 
         self.app_cookies = {}
-        # self.refresh_app()
-
+        #self.refresh_app()
 
 class login:
     def __init__(self, url, token):
@@ -283,14 +277,15 @@ class login:
             headers = {}
         if cookies is None:
             cookies = {}
-        return requests.get(*args, cookies={**cookies, **self.cookies}, headers={**headers, **self.headers}, **kwargs)
+        return requests.get(*args, cookies={**cookies, **self.cookies}, headers={**headers, **self.headers},
+                            **kwargs)
 
     @property
     def headers(self):
         return self.token.headers
 
 
-course_time_re = re.compile(r'\[([0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*)(?:周)?]'
+course_time_re = re.compile(r'\[([0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*)(?:周)?\]'
                             r'(?:星期)?(一|二|三|四|五|六|日|[0-9])第([0-9]+(?:-[0-9]+)?(?:,[0-9]+(?:-[0-9]+)?)*)')
 
 college_calendar_month_re = re.compile(
@@ -303,9 +298,9 @@ college_calendar_day_re = re.compile(
 )
 
 timetable_re = re.compile(
-    r'<tr (?:class="[A-Za-z0-9- ]+")?>\s*' +
-    r'<td[^>]*>[\S\s]*?</td>\s*' * 2 +
-    r'<td[^>]*>([\S\s]*?)</td>\s*' * 7 +
+    r'<tr (?:class="[A-Za-z0-9- ]+")?>\s*' + \
+    r'<td[^>]*>[\S\s]*?</td>\s*' * 2 + \
+    r'<td[^>]*>([\S\s]*?)</td>\s*' * 7 + \
     r'</tr>'
 )
 
@@ -327,7 +322,6 @@ timetable_all_re = re.compile(
     r'</br>\s*' + \
     rf'({timetable_item_re}(?:[,，]{timetable_item_re})*)'
 )
-
 
 class bykc(login):
     class course:
@@ -365,11 +359,11 @@ class bykc(login):
         def __str__(self):
             return \
                 f"{self.id} {self.name} {self.teacher}\n" \
-                f"{self.classroom} {self.college} {self.current if self.current is not None else '-'}/{self.max}\n" \
-                f"Start:  {date2str(self.start)}\n" \
-                f"End:    {date2str(self.end)}\n" \
-                f"Enroll: {date2str(self.select_start)} - {date2str(self.select_end)}\n" \
-                f""
+                    f"{self.classroom} {self.college} {self.current if self.current is not None else '-'}/{self.max}\n" \
+                    f"Start:  {date2str(self.start)}\n" \
+                    f"End:    {date2str(self.end)}\n" \
+                    f"Enroll: {date2str(self.select_start)} - {date2str(self.select_end)}\n" \
+                    f""
 
         def __repr__(self):
             return str(self)
@@ -400,29 +394,76 @@ class bykc(login):
     def headers(self):
         return {'auth_token': self.bykc_token, **super().headers}
 
-    def query(self, name, default=None):
+    def query(self, name, default=None, throw=False):
         if default is None: default = []
         try:
-            return json.loads(self.get(f'{self.weburl}/sscv/{name}').content).get('data', default)
+            res = self.__encrypted_api(name)
+            if res is None:
+                res = default
+            return res
         except:
             self.refresh()
-        return json.loads(self.get(f'{self.weburl}/sscv/{name}').content).get('data', [])
+        try:
+            res = self.__encrypted_api(name)
+        except:
+            if throw:
+                raise
+            res = None
+        if res is None:
+            res = default
+        return res
+
+    def __encrypted_api(self, name, payload=None):
+        if payload is None:
+            payload = {}
+
+        raw_data = json.dumps(payload)
+        #raw_data = json.dumps(payload, ensure_ascii=True)
+
+        raw_data_bytes = raw_data.encode('utf8')
+        aes_key = bykc_encrypt.generate_aes_key()
+        data_sign = bykc_encrypt.sign(raw_data_bytes)
+        timestamp = int(time.time() * 1000)
+        headers = {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'ak': bykc_encrypt.rsa_encrypt(aes_key).decode('utf8'),
+            'sk': bykc_encrypt.rsa_encrypt(data_sign).decode('utf8'),
+            'ts': str(timestamp),
+        }
+
+        encrypted_data = bykc_encrypt.b64encode(bykc_encrypt.aes_encrypt(raw_data_bytes, aes_key))
+        res = self.post(
+            f'{self.weburl}/sscv/{name}',
+            data=encrypted_data,
+            headers=headers,
+        )
+        if res.status_code < 200 or res.status_code >= 300:
+            raise BUAAException(f'API {name} returns error status code {res.status_code} with content: {res.content}')
+
+        content = res.content
+        try:
+            content = bykc_encrypt.b64decode(content)
+        except ValueError:
+            # The response is not base64 format, which indicates the content is raw text with error status code
+            res_decode = json.loads(content)
+            status = res_decode.get('status', None)
+            raise BUAAException(f'API {name} returns error status {status} with data {res_decode.get("data", None)}', status=status)
+        try:
+            res_decode = json.loads(bykc_encrypt.aes_decrypt(content, aes_key))
+        except ValueError:
+            raise BUAAException(f'API {name} returns invalid data {content}')
+        status = res_decode.get('status', None)
+        if status != '0':
+            raise BUAAException(f'API {name} returns error status {status} with data {res_decode.get("data", None)}', status=status)
+        return res_decode.get('data', None)
 
     def api(self, name, payload=None):
         if payload is None: payload = {}
         try:
-            return json.loads(self.post(
-                f'{self.weburl}/sscv/{name}',
-                data=json.dumps(payload, ensure_ascii=True),
-                headers={'Content-Type': 'application/json;charset=UTF-8'},
-            ).content).get('data', None)
+            return self.__encrypted_api(name=name, payload=payload)
         except:
             self.refresh()
-        return json.loads(self.post(
-            f'{self.weburl}/sscv/{name}',
-            data=json.dumps(payload, ensure_ascii=True),
-            headers={'Content-Type': 'application/json;charset=UTF-8'},
-        ).content).get('data', None)
+        return self.__encrypted_api(name=name, payload=payload)
 
     def courses(self, data):
         res = {}
@@ -453,10 +494,8 @@ class bykc(login):
         res = None
         for _ in range(self.retry_limit + 1):
             res = self.query('queryChosenCourse', None)
-            if res is None or not isinstance(res, dict):
-                self.refresh()
-            else:
-                break
+            if res is None or not isinstance(res, dict): self.refresh()
+            else: break
         if res is None or not isinstance(res, dict): raise BUAAException('Failed to get history')
         res = res.get('historyCourseList', [])
         _res = []
@@ -471,10 +510,8 @@ class bykc(login):
         res = None
         for _ in range(self.retry_limit + 1):
             res = self.query('queryChosenCourse', None)
-            if res is None or not isinstance(res, dict):
-                self.refresh()
-            else:
-                break
+            if res is None or not isinstance(res, dict): self.refresh()
+            else: break
         if res is None or not isinstance(res, dict): raise BUAAException('Failed to get chosen courses')
         res = res.get('courseList', [])
         _res = []
@@ -484,21 +521,38 @@ class bykc(login):
                 _res.append(cc)
         return self.courses(_res)
 
-    def detail(self, id):
+    def detail(self, id, throw=False):
         res = None
         for _ in range(self.retry_limit + 1):
-            res = self.api('queryCourseById', {'id': id})
+            try:
+                res = self.api('queryCourseById', {'id': id})
+            except BUAAException as e:
+                res = None
+                if e.status == '1':
+                    break
+                if throw:
+                    raise
             if res is not None: break
         if res is None: raise BUAAException('Failed to get course detail')
         return self.course(res)
 
-    def enroll(self, id):
-        res = self.api('choseCourse', {'courseId': id})
+    def enroll(self, id, throw=False):
+        try:
+            res = self.api('choseCourse', {'courseId': id})
+        except:
+            if throw:
+                raise
+            res = None
         if res is None: return False
         return id in self.chosen
 
-    def drop(self, id):
-        res = self.api('delChosenCourse', {'id': id})
+    def drop(self, id, throw=False):
+        try:
+            res = self.api('delChosenCourse', {'id': id})
+        except:
+            if throw:
+                raise
+            res = None
         if res is None: return False
         return id not in self.chosen
 
@@ -535,8 +589,7 @@ class jwxt(login):
     def refresh(self, url=None):
         super().refresh(self.loginurl)
 
-    def choose(self, year, season, course_id: str, course_type='ZY', tail='001', *,
-               external=False, wish=None, weight=None, verbose=False):
+    def choose(self, year, season, course_id: str, course_type='ZY', tail='001', *, external=False, wish=None, weight=None, verbose=False):
         if len(course_id) < 9 or len(course_id) > 10:
             raise BUAAException('Invalid course ID')
         course_id = course_id.upper()
@@ -567,6 +620,7 @@ class jwxt(login):
             'pageXnxq': f'{head}{season}',
             'pageXkmkdm': pageXkmkdm,
         }
+        payload = '&'.join(map(lambda x: f"{url_escape(x[0])}={url_escape(x[1])}", data.items()))
         headers = {
             'Referrer': f'{self.weburl}/{self.path_id}/xslbxk/queryXsxkList',
             'Upgrade-Insecure-Requests': '1',
@@ -586,7 +640,8 @@ class jwxt(login):
 
         choice_token = None
         while choice_token is None:
-            form = self.post(f'{self.weburl}/{self.path_id}/xslbxk/queryXsxkList', data=data, headers=headers).content.decode('utf8')
+            form = self.post(f'{self.weburl}/{self.path_id}/xslbxk/queryXsxkList', data=payload,
+                             headers=headers).content.decode('utf8')
 
             if form.find('</form>') < 0:
                 if verbose:
@@ -611,7 +666,8 @@ class jwxt(login):
                 print('Failed to get access token. Retrying.')
         data['token'] = choice_token
         data['rwh'] = cid
-        self.post(f'{self.weburl}/{self.path_id}/xslbxk/saveXsxk', data=data, headers=headers)
+        payload1 = '&'.join(map(lambda x: f"{url_escape(x[0])}={url_escape(x[1])}", data.items()))
+        self.post(f'{self.weburl}/{self.path_id}/xslbxk/saveXsxk', data=payload1, headers=headers)
 
         return self.enrolled(year, season, course_id, tail)
 
@@ -625,14 +681,15 @@ class jwxt(login):
 
         data = {
             'rwh': cid,
+            'pageXklb': 'xslbxk',
+            'pageXnxq': f'{head}{season}',
+            'pageKcmc': course_id,
             'pageNj': '',
             'pageYxdm': '',
             'pageZydm': '',
-            'pageXklb': 'xslbxk',
             'pageBs': '',
-            'pageXnxq': f'{head}{season}',
-            'pageKcmc': '',
         }
+        payload = '&'.join(map(lambda x: f"{url_escape(x[0])}={url_escape(x[1])}", data.items()))
         headers = {
             'Referrer': f'{self.weburl}/{self.path_id}/xslbxk/queryYxkc?pageXklb=xslbxk&pageXnxq={head}{season}',
             'Upgrade-Insecure-Requests': '1',
@@ -642,8 +699,8 @@ class jwxt(login):
             'Origin': self.weburl,
             'Content-Type': 'application/x-www-form-urlencoded',
         }
-        result = self.post(f'{self.weburl}/{self.path_id}/xslbxk/saveXstk', data=data, headers=headers)
-        print(result.text)
+        self.post(f'{self.weburl}/{self.path_id}/xslbxk/saveXstk', data=payload, headers=headers)
+
         return not self.enrolled(year, season, course_id, tail)
 
     def enrolled(self, year, season, course_id: str, tail='001'):
@@ -669,10 +726,12 @@ class jwxt(login):
             'Origin': self.weburl,
             'Content-Type': 'application/x-www-form-urlencoded',
         }
-        form = self.post(f'{self.weburl}/{self.path_id}/xslbxk/queryYxkc', data=data, headers=headers).content.decode('utf8')
+        payload = '&'.join(map(lambda x: f"{url_escape(x[0])}={url_escape(x[1])}", data.items()))
+        form = self.post(f'{self.weburl}/{self.path_id}/xslbxk/queryYxkc', data=payload,
+                         headers=headers).content.decode('utf8')
         return form.find(f'id="{cid}"') >= 0
 
-    def export_timetable(self, year, season, file: str = None):
+    def export_timetable(self, year, season, file: str=None):
         attachment_re = re.compile(r'^attachment;\s+filename="([^"]*)"$')
 
         _season = min(season, 2)
@@ -715,8 +774,8 @@ class jwxt(login):
         def __eq__(self, other):
             if isinstance(other, self.__class__):
                 return self.name == other.name and \
-                       self.teacher == other.teacher and \
-                       self.date == other.date
+                    self.teacher == other.teacher and \
+                    self.date == other.date
             return NotImplemented
 
         def __lt__(self, other):
@@ -799,7 +858,6 @@ def _teacher_weeks(teacher_weeks):
         m = re.search(week_single_grouped_re, teacher_weeks)
     return res
 
-
 def timespan(s: str):
     times = re.split('[,，]', s)
     res = []
@@ -814,9 +872,7 @@ def timespan(s: str):
                 res.append(i)
     return sorted(res)
 
-
 COURSE_SPAN = datetime.timedelta(minutes=45)
-
 
 def time_lut(course_time):
     course_time = min(max(int(course_time), 1), 14)
@@ -850,17 +906,12 @@ def time_lut(course_time):
         return datetime.timedelta(hours=21, minutes=40)
     return NotImplemented
 
-
 def mail(args, sender, password, receiver=None, server=None, title='Reminder', file='src/reminder.html'):
     with smtp.login_mail(sender, password, server=server) as s:
-        return smtp.mail(s, smtp.mime_from_file(title, file, replace={'product_name': PRODUCT_NAME, **args}),
-                         receiver=receiver)
-
+        return smtp.mail(s, smtp.mime_from_file(title, file, replace={'product_name': PRODUCT_NAME, **args}), receiver=receiver)
 
 def remind(course_detail, sender, password, receiver=None, server=None, title='Reminder'):
-    return mail({'course_detail': course_detail}, sender, password, receiver=receiver, server=server, title=title,
-                file='src/reminder.html')
-
+    return mail({'course_detail': course_detail}, sender, password, receiver=receiver, server=server, title=title, file='src/reminder.html')
 
 def bykc_notice(course: bykc.course, sender, password, receiver=None, server=None, title='BYKC Notice: Enrolled in %s'):
     return mail({
@@ -877,5 +928,16 @@ def bykc_notice(course: bykc.course, sender, password, receiver=None, server=Non
         'enroll_end': date2str(course.select_end),
         'description': course.desc if course.desc is not None else '',
         'max': course.max,
-    }, sender, password, receiver=receiver, server=server, title=title % ('%s %s' % (course.id, course.name)),
-        file='src/bykc_notice.html')
+    }, sender, password, receiver=receiver, server=server, title=title % ('%s %s' % (course.id, course.name)), file='src/bykc_notice.html')
+
+
+__all__ = [
+    'BUAAException',
+    'CASTGC',
+    'login',
+    'bykc',
+    'jwxt',
+    'mail',
+    'remind',
+    'bykc_notice',
+]

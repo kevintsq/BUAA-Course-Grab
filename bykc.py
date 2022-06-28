@@ -6,9 +6,9 @@ import datetime
 import json
 
 TRAVEL_TIME = 60
-RETRY_LIMIT = 128
+RETRY_LIMIT = 32
 DEFAULT_INTERVAL = 1
-SCAN_INTERVAL = 60 # seconds
+SCAN_INTERVAL = 60  # seconds
 
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('-h', '--help', action='help', help='To show help.')
@@ -47,7 +47,7 @@ parser.add_argument('-s', '--safe', nargs='?', default=NotImplemented, type=floa
                     help='Safe mode. When this switch is on, the script will never attempt to enroll in a course '
                          'in conflict with regular course timetable. If time is specified, a travel time is taken into '
                          'consideration, ensuring safety of a higher level. The default estimated travel time is '
-                        f'{TRAVEL_TIME} (minutes).')
+                         f'{TRAVEL_TIME} (minutes).')
 parser.add_argument('-m', '--mail', nargs=2, default=None, type=str, metavar=('account@example.com', 'password'),
                     help='The mail account applied to send reminder email. Setting an email address indicates sending '
                          'a reminder when a target course is successfully enrolled in.')
@@ -57,11 +57,11 @@ parser.add_argument('-r', '--receiver', type=str, default=None, metavar='receive
                     help='The receiver of the reminder. The reminder will be sent to the sender account if not given.')
 parser.add_argument('-R', '--retry', type=int, default=RETRY_LIMIT, metavar='limit',
                     help='The retry limit. The script will automatically retry when connection is aborted unexpectedly'
-                        f'. The default retry limit is {RETRY_LIMIT}.')
+                         f'. The default retry limit is {RETRY_LIMIT}.')
 parser.add_argument('--scan', default=None, type=int, metavar='span',
                     help=f'The span to scan forward for discovering hidden courses.')
 parser.add_argument('--default', action='store_true',
-                    help=f'The recommended default settings. This switch is synonymous with `-C -f -l -t '
+                    help=f'The recommended default settings. This switch is synonymous with `-C -l -t '
                          f'{DEFAULT_INTERVAL} -s {TRAVEL_TIME}`.')
 
 
@@ -70,10 +70,11 @@ def main():
 
     if args.default:
         setattr(args, 'continuous', getattr(args, 'continuous', 0) + 1)
-        setattr(args, 'forecast', True)
         setattr(args, 'list', True)
-        setattr(args, 'time', DEFAULT_INTERVAL)
-        setattr(args, 'safe', TRAVEL_TIME)
+        if args.time is None:
+            setattr(args, 'time', DEFAULT_INTERVAL)
+        if args.safe is None:
+            setattr(args, 'safe', TRAVEL_TIME)
 
     try:
         vpn = getattr(args, 'vpn', None)
@@ -107,6 +108,8 @@ def main():
             for e in range(min_, max_):
                 try:
                     detail = b.detail(e)
+                except buaa.BUAAException:
+                    continue
                 except json.decoder.JSONDecodeError:
                     continue
                 start_time = detail.start
@@ -137,7 +140,7 @@ def main():
                 course_list.update(scan_res.keys())
                 sel.update(scan_res)
             chosen = set(b.chosen.keys())
-            res : set = course_list.difference(chosen)
+            res: set = course_list.difference(chosen)
             if position is not None:
                 _res = []
                 for c in res:
@@ -165,8 +168,9 @@ def main():
         ch = b.chosen
 
         if args.list:
+            sel = b.selectable
             if args.chosen:
-                course_list = set(b.selectable.keys())
+                course_list = set(sel.keys())
                 chosen = set(ch.keys())
                 available = course_list.difference(chosen)
                 if available:
@@ -176,7 +180,6 @@ def main():
                 else:
                     print('No available course.')
             else:
-                sel = b.selectable
                 if sel:
                     for _, v in sel.items():
                         print(v, end='')
@@ -198,7 +201,8 @@ def main():
                         if res:
                             print(f'Successfully dropped {d}.')
                             break
-                    except: pass
+                    except:
+                        pass
                     print(f'Failed to drop {d}.' + (' Retrying.' if _ < retry_limit - 1 else ''))
 
         elist = args.enroll
@@ -222,7 +226,8 @@ def main():
                             course = b.detail(e)
                             mail_res = buaa.bykc_notice(course, sender, password, receiver, server)
                             if not mail_res: print('Failed to send reminder message.')
-                        except: print('Failed to send reminder message.')
+                        except:
+                            print('Failed to send reminder message.')
                 else:
                     newlist.append(e)
                     amount += 1
@@ -262,9 +267,12 @@ def main():
                     enroll()
                     time.sleep(args.time)
                 print('Enrolled in all targets')
-    except: raise
+    except:
+        raise
+
 
 if __name__ == '__main__':
     try:
         main()
-    except Exception as e: print(f'{e.__class__.__qualname__}: {str(e)}')
+    except Exception as e:
+        print(f'{e.__class__.__qualname__}: {str(e)}')

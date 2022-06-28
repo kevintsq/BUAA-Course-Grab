@@ -2,10 +2,17 @@
 
 *BUAA Course Grab* is intended to be a tool set for BUAA undergraduates to automatically grab or drop courses.
 
-This tool set has following requirements.
+### Hints
+
+- After 2022/03 Boya Subject System update, the system no longer supports selecting forecast courses and drop history courses.
+- The API sometimes returns empty selectable course list, which indicates one cannot enroll in any course, and the mechanism is still unknown. When an empty list is returned, ANY attempt to enroll will be rejected, returning status code `1`.
+
+This tool set has following requirements. PIL or cv2 is used to show captcha when required (generally when using VPN).
 
 ```
+cryptography
 requests
+PIL // or cv2 + numpy
 ```
 
 The tool set contains 2 items at present.
@@ -91,7 +98,7 @@ python bykc.py usename password -lt 1 -n 3 -V 2
 Recommended argument combination:
 
 ```sh
-python bykc.py username password -Cflt 1 -s 60 [-V 1 | 2] [-p s | x | sx] [-m demo@gmail.com demopassword]
+python bykc.py username password -Clt 1 -s 60 [-V 1 | 2] [-p s | x | sx] [-m demo@gmail.com demopassword]
 ```
 
 The combination above has identical effect to the following instruction, which uses the default settings.
